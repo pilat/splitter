@@ -50,7 +50,7 @@ func (c *client) ListArtifacts(ctx context.Context) ([]Artifact, error) {
 
 	artifacts := make([]Artifact, 0)
 
-	for page := 1; page <= 10; page++ {
+	for page := 1; page <= 5; page++ {
 		url := fmt.Sprintf("https://api.github.com/repos/%s/actions/artifacts?per_page=100&page=%d", c.opts.Repo, page)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {

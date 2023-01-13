@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
-	"fmt"
 	"io"
 	"os"
 	"sort"
@@ -95,7 +94,7 @@ func main() {
 		Repo:  os.Getenv("GITHUB_REPOSITORY"),
 	}, log.New("module", "github"))
 
-	// Get up to 1000 artifacts (10 pages of 100 items)
+	// Get up to 500 artifacts (5 pages of 100 items)
 	artifacts, err := ghClient.ListArtifacts(ctx)
 	if err != nil {
 		log.Error("failed to list artifacts", "err", err)
@@ -103,12 +102,17 @@ func main() {
 	}
 
 	// Two attempts to get artifacts: from main branch (stable artifacts) and from current branch (repeat runs)
+	// TODO: get it only from main branch
 	for i := 0; i < 2; i++ {
 		filteredArtifacts := make([]github.Artifact, 0)
 		for _, artifact := range artifacts {
 			if artifact.Expired {
 				continue
 			}
+			if artifact.Name != "test-results" {
+				continue
+			}
+
 			if i == 0 && artifact.WorkflowRun.HeadBranch == "main" || i == 1 && artifact.WorkflowRun.HeadBranch == currentBranch {
 				filteredArtifacts = append(filteredArtifacts, artifact)
 			}
@@ -128,22 +132,10 @@ func main() {
 		return createdAtLeft.After(createdAtRight)
 	})
 
-	// Try to get as many artifacts as we have nodes. When you rescale nodes there will be inaccuracy what will be
-	// fixed next time.
-	foundArtifacts := make([]github.Artifact, 0)
-	for i := 0; i < maxNodes; i++ {
-		for _, artifact := range artifacts {
-			if artifact.Name == fmt.Sprintf("test-results-%d", i) {
-				foundArtifacts = append(foundArtifacts, artifact)
-				break
-			}
-		}
-	}
-
 	// Download artifacts if we found them and put into a map to avoid duplicates in case artifacts were from builds
 	// with different nodes count
 	tests := make(map[string]Tests)
-	for _, artifact := range foundArtifacts {
+	for _, artifact := range artifacts {
 		log.Info("download artifact", "id", artifact.ID, "name", artifact.Name, "branch", artifact.WorkflowRun.HeadBranch, "created_at", artifact.CreatedAt)
 		zipContent, err := ghClient.DownloadArtifact(ctx, artifact.ID)
 		if err != nil {
@@ -162,43 +154,47 @@ func main() {
 			break
 		}
 
-		if zipReader.File[0].Name != "rspec.xml" {
-			log.Error("zip archive doesn't contains rspec.xml file")
-			break
-		}
+		for _, file := range zipReader.File {
+			if !strings.HasPrefix(file.Name, "rspec-") || !strings.HasSuffix(file.Name, ".xml") {
+				continue
+			}
 
-		f, err := zipReader.File[0].Open()
-		if err != nil {
-			log.Error("failed to open zip file", "err", err)
-			break
-		}
-		defer f.Close()
+			log.Info("process file", "name", file.Name)
+			f, err := file.Open()
+			if err != nil {
+				log.Error("failed to open zip file", "err", err)
+				break
+			}
+			defer f.Close()
 
-		xmlContent, err := io.ReadAll(f)
-		if err != nil {
-			log.Error("failed to read zip file", "err", err)
-			break
-		}
+			xmlContent, err := io.ReadAll(f)
+			if err != nil {
+				log.Error("failed to read zip file", "err", err)
+				break
+			}
 
-		if len(xmlContent) == 0 {
-			log.Error("empty rspec.xml file found")
-			break
-		}
+			if len(xmlContent) == 0 {
+				log.Error("empty rspec.xml file found")
+				break
+			}
 
-		var rspec RSpec
-		err = xml.Unmarshal(xmlContent, &rspec)
-		if err != nil {
-			log.Error("failed to unmarshal xml", "err", err)
-			break
-		}
+			var rspec RSpec
+			err = xml.Unmarshal(xmlContent, &rspec)
+			if err != nil {
+				log.Error("failed to unmarshal xml", "err", err)
+				break
+			}
 
-		for _, testCase := range rspec.TestCases {
-			tests[testCase.File+"/"+testCase.Name] = Tests{
-				Filename: testCase.File,
-				Name:     testCase.Name,
-				Time:     testCase.Time,
+			for _, testCase := range rspec.TestCases {
+				tests[testCase.File+"/"+testCase.Name] = Tests{
+					Filename: testCase.File,
+					Name:     testCase.Name,
+					Time:     testCase.Time,
+				}
 			}
 		}
+
+		break // that's correct, we need only one artifact
 	}
 
 	log.Info("found tests in artifacts", "count", len(tests))
