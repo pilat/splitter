@@ -207,7 +207,7 @@ func main() {
 		allTime += test.Time
 	}
 
-	avgFileTime := 0.0
+	avgFileTime := 60.0
 	if len(filesMap) > 0 {
 		avgFileTime = allTime / float64(len(filesMap))
 	}
